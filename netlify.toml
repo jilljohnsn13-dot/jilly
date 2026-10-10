@@ -1,0 +1,4 @@
+[build]
+  publish = "."
+
+# The review endpoint lives in netlify/edge-functions/review.js (path set inside the file).
