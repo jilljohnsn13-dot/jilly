@@ -1,5 +1,6 @@
 // Netlify Edge Function: receives the documents, asks Claude for the review, and streams the answer back.
-// Needs the environment variable ANTHROPIC_API_KEY. Optional: ACCESS_CODE, CLAUDE_MODEL.
+// Uses Netlify AI Gateway automatically (no API key needed; billed to Netlify credits).
+// Optional: ACCESS_CODE, CLAUDE_MODEL. Setting your own ANTHROPIC_API_KEY switches to direct Anthropic billing.
 // Streaming keeps the connection alive while long leases are reviewed.
 import { buildPrompt } from "../../lib/playbook.js";
 
@@ -34,7 +35,8 @@ function cleanDoc(d) {
 export default async function handler(req, context) {
   if (req.method !== "POST") return json(405, { error: "Use POST." });
   const apiKey = env("ANTHROPIC_API_KEY");
-  if (!apiKey) return json(500, { error: "The site isn't connected to Claude yet. The owner needs to add ANTHROPIC_API_KEY in Netlify." });
+  const baseUrl = (env("ANTHROPIC_BASE_URL") || "https://api.anthropic.com").replace(/\/$/, "");
+  if (!apiKey) return json(500, { error: "The review service isn't available right now. Please try again later." });
 
   let body;
   try { body = await req.json(); } catch { return json(400, { error: "That upload didn't come through. Try again." }); }
@@ -68,7 +70,7 @@ export default async function handler(req, context) {
 
   let upstream;
   try {
-    upstream = await fetch("https://api.anthropic.com/v1/messages", {
+    upstream = await fetch(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({ model: env("CLAUDE_MODEL") || "claude-sonnet-5-5", max_tokens: 12000, stream: true, messages: [{ role: "user", content }] })
@@ -80,7 +82,7 @@ export default async function handler(req, context) {
     let msg = "";
     try { msg = (await upstream.json())?.error?.message || ""; } catch {}
     console.error("Anthropic error", upstream.status, msg);
-    const error = upstream.status === 429 || upstream.status === 529 ? "The review service is busy right now. Try again in a minute."
+    const error = upstream.status === 429 || upstream.status === 529 || upstream.status === 402 ? "The review service is busy right now. Try again in a few minutes."
       : /too long/i.test(msg) || upstream.status === 413 ? "These documents are too long to review at once. Try the LOI alone, or paste only the main lease sections."
       : "The review couldn't be completed. Try again.";
     return json(502, { error });
