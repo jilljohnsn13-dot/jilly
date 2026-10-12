@@ -90,12 +90,13 @@ export default async function handler(req, context) {
 
   // Turn Claude's event stream into plain text for the page.
   const enc = new TextEncoder(), dec = new TextDecoder();
-  let buf = "";
+  let buf = "", closed = false;
+  const reader = upstream.body.getReader();
   const out = new ReadableStream({
     async start(controller) {
-      const reader = upstream.body.getReader();
+      const send = (t) => { if (!closed) { try { controller.enqueue(enc.encode(t)); } catch { closed = true; } } };
       try {
-        while (true) {
+        while (!closed) {
           const { value, done } = await reader.read();
           if (done) break;
           buf += dec.decode(value, { stream: true });
@@ -105,16 +106,17 @@ export default async function handler(req, context) {
             const line = evt.split("\n").find(l => l.startsWith("data:"));
             if (!line) continue;
             let data; try { data = JSON.parse(line.slice(5)); } catch { continue; }
-            if (data.type === "content_block_delta" && data.delta?.type === "text_delta") controller.enqueue(enc.encode(data.delta.text));
-            else if (data.type === "error") controller.enqueue(enc.encode(ERR + "The review was interrupted. Try again."));
+            if (data.type === "content_block_delta" && data.delta?.type === "text_delta") send(data.delta.text);
+            else if (data.type === "error") send(ERR + "The review was interrupted. Try again.");
           }
         }
       } catch {
-        controller.enqueue(enc.encode(ERR + "The review was interrupted. Try again."));
+        send(ERR + "The review was interrupted. Try again.");
       }
-      controller.close();
+      if (!closed) { closed = true; try { controller.close(); } catch {} }
     },
-    cancel() { try { upstream.body.cancel(); } catch {} }
+    // The visitor closed or left the page: stop the review so it doesn't keep using credits.
+    cancel() { closed = true; reader.cancel().catch(() => {}); }
   });
   return new Response(out, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 }
