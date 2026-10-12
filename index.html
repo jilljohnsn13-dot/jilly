@@ -297,7 +297,7 @@ async function load(kind, file){
     paintDrop(kind);
     $("msg").hidden = true;
     refreshGo();
-    if (!inView($("go"))) $("go").scrollIntoView({behavior: smooth(), block:"center"});
+    if (!inView($("go"))) $("go").scrollIntoView({behavior:"auto", block:"center"});
     $("go").focus({preventScroll:true});
   } catch (e) {
     docs[kind] = null; paintDrop(kind);
@@ -405,7 +405,9 @@ $("intake").addEventListener("submit", async ev => {
   $("msg").hidden = true;
   busy = true; refreshGo();
   renderProgress(what, 0);
-  if (!inView($("report").firstElementChild)) $("report").scrollIntoView({behavior: smooth(), block:"start"});
+  showMsg(`<span class="spinner"></span>Reviewing your ${what}… keep this page open (30–90 seconds).`);
+  // Bring the progress panel into view right away (instant, so a shrinking page can't interrupt it)
+  requestAnimationFrame(() => { const t = $("report").getBoundingClientRect().top; if (t < 0 || t > innerHeight - 120) scrollTo({top: Math.max(0, t + scrollY - 16), behavior:"auto"}); });
   try {
     const r = await fetch("/api/review", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(payload), signal: ctl.signal});
     if (!r.ok) {
@@ -421,7 +423,7 @@ $("intake").addEventListener("submit", async ev => {
       if (done) break;
       text += dec.decode(value, {stream:true});
       const n = (text.match(/"status"\s*:/g) || []).length;
-      if (n !== lastCount) { lastCount = n; renderProgress(what, n); }
+      if (n !== lastCount) { lastCount = n; renderProgress(what, n); if (n) showMsg(`<span class="spinner"></span>Writing the review… ${Math.min(n, PLAYBOOK.length)} of ${PLAYBOOK.length} items checked`); }
     }
     const errAt = text.indexOf("\u0000ERROR:");
     if (errAt >= 0) throw new Error(text.slice(errAt + 7));
