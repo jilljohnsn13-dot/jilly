@@ -125,6 +125,14 @@ td.del{color:var(--red);text-decoration:line-through;text-decoration-thickness:1
 .pb-grid h4{margin:0 0 4px;font-family:var(--display);font-size:16px}
 .pb-grid ul{margin:0;padding-left:18px;font-size:13.5px;color:var(--muted)}
 .foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--rule);padding-top:14px;max-width:80ch}
+.progress{background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:28px 24px;display:flex;flex-direction:column;gap:14px}
+.progress.err{border-color:var(--red);background:var(--red-soft)}
+.progress h2{display:flex;align-items:center;gap:10px}
+.progress .big-spin{width:22px;height:22px;border-width:3px;margin:0}
+.bar{height:8px;border-radius:999px;background:var(--grey-soft);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--red);border-radius:999px;transition:width .4s ease}
+.progress .keep{font-weight:600}
+@media (prefers-reduced-motion:reduce){.bar>span{transition:none}}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--rule);border-top-color:var(--red);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spinner{animation:none}.drop{transition:none}}
@@ -287,6 +295,10 @@ async function load(kind, file){
   try {
     docs[kind] = await extract(file);
     paintDrop(kind);
+    $("msg").hidden = true;
+    refreshGo();
+    if (!inView($("go"))) $("go").scrollIntoView({behavior: smooth(), block:"center"});
+    $("go").focus({preventScroll:true});
   } catch (e) {
     docs[kind] = null; paintDrop(kind);
     showMsg(e.message || "Couldn't read that file. Try a PDF or .docx, or paste the text.", true);
@@ -336,10 +348,38 @@ function getDoc(kind){
   return null;
 }
 function showMsg(text, isErr){ const m=$("msg"); m.hidden=false; m.className = "status" + (isErr?"":" info"); m.innerHTML = text; }
+const smooth = () => matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+function inView(el){ const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }
+// Shown in the report column while a review runs, so it's obvious something is happening
+function renderProgress(what, n){
+  const pct = n ? Math.round(Math.min(n, PLAYBOOK.length) / PLAYBOOK.length * 100) : 4;
+  const p = $("report").querySelector(".progress:not(.err)");
+  if (p) { p.querySelector(".bar>span").style.width = pct + "%"; p.querySelector(".step").textContent = n ? `${Math.min(n, PLAYBOOK.length)} of ${PLAYBOOK.length} playbook items checked` : "Reading your document…"; return; }
+  $("report").innerHTML = `<section class="progress" role="status">
+    <h2><span class="spinner big-spin"></span>Reviewing your ${esc(what)}</h2>
+    <div class="bar"><span style="width:${pct}%"></span></div>
+    <p class="step" style="margin:0">${n ? "" : "Reading your document…"}</p>
+    <p class="keep" style="margin:0">Keep this page open. A review usually takes 30–90 seconds, longer for a full lease.</p>
+    <div><button type="button" class="btn ghost" id="stop2">Stop</button></div>
+  </section>`;
+  $("stop2").addEventListener("click", () => ctl?.abort());
+}
+function renderProblem(message){
+  $("report").innerHTML = `<section class="progress err" role="alert">
+    <h2>The review didn't finish</h2>
+    <p style="margin:0">${esc(message)}</p>
+    <p class="small">Your documents are still loaded. Press <b>Review my documents</b> to try again.</p>
+  </section>`;
+}
+addEventListener("beforeunload", e => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
 
 /* ---------- Review service ---------- */
 let busy = false, ctl;
-function refreshGo(){ $("go").disabled = !(getDoc("loi") || getDoc("lease")) || busy; }
+function refreshGo(){
+  const l = getDoc("loi"), s = getDoc("lease");
+  $("go").disabled = !(l || s) || busy;
+  $("go").textContent = busy ? "Reviewing…" : l && s ? "Review my LOI and lease" : l ? "Review my LOI" : s ? "Review my lease" : "Review my documents";
+}
 refreshGo();
 
 $("intake").addEventListener("submit", async ev => {
@@ -361,7 +401,11 @@ $("intake").addEventListener("submit", async ev => {
 
   busy = true; refreshGo(); ctl = new AbortController();
   $("stop").hidden = false;
-  showMsg(`<span class="spinner"></span>Reviewing your ${loi && lease ? "LOI and lease" : loi ? "LOI" : "lease"}. This usually takes 30–90 seconds.`);
+  const what = loi && lease ? "LOI and lease" : loi ? "LOI" : "lease";
+  $("msg").hidden = true;
+  busy = true; refreshGo();
+  renderProgress(what, 0);
+  if (!inView($("report").firstElementChild)) $("report").scrollIntoView({behavior: smooth(), block:"start"});
   try {
     const r = await fetch("/api/review", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(payload), signal: ctl.signal});
     if (!r.ok) {
@@ -377,7 +421,7 @@ $("intake").addEventListener("submit", async ev => {
       if (done) break;
       text += dec.decode(value, {stream:true});
       const n = (text.match(/"status"\s*:/g) || []).length;
-      if (n !== lastCount) { lastCount = n; showMsg(`<span class="spinner"></span>Writing the review… ${n ? `${Math.min(n, PLAYBOOK.length)} of ${PLAYBOOK.length} items checked` : "reading your document"}`); }
+      if (n !== lastCount) { lastCount = n; renderProgress(what, n); }
     }
     const errAt = text.indexOf("\u0000ERROR:");
     if (errAt >= 0) throw new Error(text.slice(errAt + 7));
@@ -387,10 +431,10 @@ $("intake").addEventListener("submit", async ev => {
     filter = "action";
     renderReport(data);
     $("msg").hidden = true;
-    $("report").scrollIntoView({behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block:"start"});
+    $("report").scrollIntoView({behavior: smooth(), block:"start"});
   } catch (e) {
-    if (e.name === "AbortError") showMsg("Stopped. Your documents are still loaded.", false);
-    else showMsg(esc(e.message || "Couldn't reach the review service. Check your connection and try again."), true);
+    if (e.name === "AbortError") { renderReport(current || EXAMPLE); showMsg("Stopped. Your documents are still loaded.", false); }
+    else { const m = e.message || "Couldn't reach the review service. Check your connection and try again."; renderProblem(m); showMsg(esc(m), true); }
   } finally {
     busy = false; $("stop").hidden = true; refreshGo();
   }
